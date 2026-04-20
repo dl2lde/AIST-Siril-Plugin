@@ -1,0 +1,4 @@
+# AIST – AstroImage Stretch Tool
+requires python
+
+python AIST.py

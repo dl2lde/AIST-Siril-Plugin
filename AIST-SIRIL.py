@@ -1,7 +1,13 @@
-##############################################
-# AIST – Siril Plugin (AITS-style shell)
-# Port complet al pipeline-ului AIST pe imaginea curentă din Siril
-##############################################
+#####################################################
+# AIST – Siril Plugin (AITS-style shell)            #
+# AstroImage Tools Suite / AstroImage Stretch Tool  #
+# Author: Lucas Vuescu - © 2026                     #
+# Contact: astro@mdci.ro or ldvuescu@gmail.com      #
+#####################################################
+#                                                   #
+#   SPDX-License-Identifier: GPL-3.0-or-later       #
+#                                                   #
+#####################################################
 
 import sys
 import os

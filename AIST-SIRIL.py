@@ -72,7 +72,7 @@ QCheckBox::indicator:checked {
 }
 """
 
-VERSION = "1.3"
+VERSION = "2.0"
 
 # =============================================================================
 #  CORE: NORMALIZARE INPUT
@@ -238,6 +238,27 @@ class FitGraphicsView(QGraphicsView):
             event.accept()
             return
         super().mouseDoubleClickEvent(event)
+        
+    def mousePressEvent(self, event):
+        # Zoom IN pe click stânga
+        if event.button() == Qt.MouseButton.LeftButton:
+            click_pos = self.mapToScene(event.position().toPoint())
+            zoom_factor = 1.5
+            self.scale(zoom_factor, zoom_factor)
+            self.centerOn(click_pos)
+            event.accept()
+            return
+
+        # Zoom OUT pe click dreapta
+        elif event.button() == Qt.MouseButton.RightButton:
+            click_pos = self.mapToScene(event.position().toPoint())
+            zoom_factor = 1 / 1.5
+            self.scale(zoom_factor, zoom_factor)
+            self.centerOn(click_pos)
+            event.accept()
+            return
+
+        super().mousePressEvent(event)
 
 # =============================================================================
 #  WORKER THREAD
@@ -289,6 +310,7 @@ class AISTSirilGUI(QMainWindow):
         self.setStyleSheet(AITS_STYLE)
         self.resize(1400, 720)
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
+        self.last_params_hash = None
 
         self.settings = QSettings("AIST", "SirilPlugin")
 
@@ -297,14 +319,16 @@ class AISTSirilGUI(QMainWindow):
 
         self.debounce = QTimer()
         self.debounce.setSingleShot(True)
-        self.debounce.setInterval(150)
+        self.debounce.setInterval(250)
         self.debounce.timeout.connect(self.run_worker)
 
         header_msg = (
-            "\n##############################################\n"
-            "# AIST – AstroImage Stretch Tool (Siril)\n"
-            "# Port complet pe imaginea curentă din Siril\n"
-            "##############################################"
+            "\n#####################################################\n"
+            "# AIST – Siril Plugin (AITS-style shell)            #\n"
+            "# AstroImage Tools Suite / AstroImage Stretch Tool  #\n"
+            "# Author: Lucas Vuescu - © 2026                     #\n"
+            "# Contact: astro@mdci.ro or ldvuescu@gmail.com      #\n"
+            "#####################################################"
         )
         try:
             self.siril.log(header_msg)
@@ -334,7 +358,7 @@ class AISTSirilGUI(QMainWindow):
         left.addWidget(lbl_title)
 
         # === BRAND ===
-        brand = QLabel("© 2026 by Lucas V.")
+        brand = QLabel("● Release 25.04.2026 - © Lucas V. ●")
         brand.setStyleSheet("color: #2ec4c7; font-size: 10pt; font-weight: italic;")
         brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -429,6 +453,7 @@ class AISTSirilGUI(QMainWindow):
         self.auto_stretch.setChecked(True)
         self.stf_cb = QCheckBox("STF")
         self.stf_cb.setChecked(False)
+        self.stf_cb.hide()
         cb_layout.addWidget(self.auto_wb)
         cb_layout.addWidget(self.auto_stretch)
         cb_layout.addWidget(self.stf_cb)
@@ -472,14 +497,14 @@ class AISTSirilGUI(QMainWindow):
         b_fit = QPushButton("Fit"); b_fit.setObjectName("ZoomBtn"); b_fit.clicked.connect(self.fit_view)
         b_11 = QPushButton("1:1"); b_11.setObjectName("ZoomBtn"); b_11.clicked.connect(self.zoom_1to1)
         b_in = QPushButton("+"); b_in.setObjectName("ZoomBtn"); b_in.clicked.connect(self.zoom_in)
-        lbl_hint = QLabel("Preview: Double-click to fit")
+        lbl_hint = QLabel("Preview: Zoom+ Click Left - Double-click to fit - Zoom- Click rig")
         lbl_hint.setStyleSheet("color: #00ff00; font-size: 10pt; font-style: italic; margin-left: 10px;")
         
         self.btn_coffee = QPushButton("☕")
         self.btn_coffee.setObjectName("CoffeeButton")
         self.btn_coffee.setToolTip("I hope Like it!")
         self.btn_coffee.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_coffee.clicked.connect(lambda: webbrowser.open("https://mdci.ro/aipt.php"))
+        self.btn_coffee.clicked.connect(lambda: webbrowser.open("https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=ldvuescu@gmail.com&currency_code=EUR&amount=3"))
 
 
         self.chk_ontop = QCheckBox("On Top")
@@ -535,17 +560,32 @@ class AISTSirilGUI(QMainWindow):
                 img = np.array([img, img, img])
             if img.shape[0] == 1:
                 img = np.repeat(img, 3, axis=0)
-
+            
+            # Corectăm orientarea FITS (flip vertical)
+            # img = np.flip(img, axis=1)
             self.img_full = img
 
             h, w = img.shape[1], img.shape[2]
             scale = 2048 / max(h, w)
+
             if scale < 1.0:
-                step = int(1 / scale)
-                self.img_proxy = img[:, ::step, ::step].copy()
+                new_w = int(w * scale)
+                new_h = int(h * scale)
+
+                # CHW → HWC
+                img_hwc = np.transpose(img, (1, 2, 0))
+
+                # downsample corect (ca PixInsight)
+                resized = cv2.resize(
+                    img_hwc,
+                    (new_w, new_h),
+                    interpolation=cv2.INTER_AREA
+                )
+
+                # HWC → CHW
+                self.img_proxy = np.transpose(resized, (2, 0, 1))
             else:
                 self.img_proxy = img.copy()
-
             self.trigger_update()
 
         except Exception as e:
@@ -593,12 +633,25 @@ class AISTSirilGUI(QMainWindow):
             'autostretch': self.autostretch_slider.value()
         }
 
+        # 🔥 cache params (evită recalculări inutile)
+        params_tuple = tuple(p.values())
+        if hasattr(self, "last_params_hash") and params_tuple == self.last_params_hash:
+            return
+
+        self.last_params_hash = params_tuple
+
+        # 🔥 evită stacking de thread-uri
+        if hasattr(self, "worker") and self.worker.isRunning():
+            return
+
+
         self.worker = AISTWorker(self.img_proxy, p)
         self.worker.result_ready.connect(self.update_display)
         self.worker.start()
 
     def update_display(self, linear, preview8):
         # preview8: HWC, uint8, RGB
+        preview8 = np.flipud(preview8)
         disp = preview8
         h, w, c = disp.shape
         qimg = QImage(disp.data.tobytes(), w, h, c * w, QImage.Format.Format_RGB888)
@@ -614,8 +667,11 @@ class AISTSirilGUI(QMainWindow):
         self.setEnabled(False)
 
         try:
-            # CHW -> HWC
+            print("img_full shape BEFORE transpose =", self.img_full.shape)
+
+            # CHW -> HWC (doar dacă e CHW!)
             img = np.transpose(self.img_full, (1, 2, 0))
+            print("img shape AFTER transpose =", img.shape)
 
             proc = aist_process_pipeline(
                 img,
@@ -631,19 +687,31 @@ class AISTSirilGUI(QMainWindow):
                 autostretch_slider=self.autostretch_slider.value()
             )
 
-            proc = np.nan_to_num(proc, nan=0.0, posinf=1.0, neginf=0.0)
-            out = np.transpose(proc, (2, 0, 1)).astype(np.float32)
+            proc = np.nan_to_num(proc, nan=0.0, posinf=1.0, neginf=0.0)         
+            # out = np.transpose(proc, (2, 0, 1)).astype(np.float32)
+            out = np.transpose(proc, (2, 0, 1))
 
+            with self.siril.image_lock():
+                original = self.siril.get_image_pixeldata()
+                original_dtype = original.dtype
+
+            if original_dtype == np.uint16:
+                out = np.clip(out, 0, 1)
+                out = (out * 65535.0).astype(np.uint16)
+            elif original_dtype == np.uint8:
+                out = np.clip(out, 0, 1)
+                out = (out * 255.0).astype(np.uint8)
+            else:
+                out = np.clip(out, 0, 1).astype(np.float32)            
             filename = "AIST_Siril_Stretch.fit"
             path = os.path.join(os.getcwd(), filename)
             safe_path = path.replace(os.sep, '/')
 
             with self.siril.image_lock():
+                self.siril.undo_save_state("AIST Stretch")  # 🔥 ADD
                 self.siril.set_image_pixeldata(out)
 
-            self.siril.cmd(f'save "{safe_path}"')
-            self.siril.cmd(f'load "{safe_path}"')
-            self.siril.log(f"AIST: Saved {filename} & Loaded.", LogColor.GREEN)
+            self.siril.log("AIST: Applied to current image.", LogColor.GREEN)
             self.close()
 
         except Exception as e:

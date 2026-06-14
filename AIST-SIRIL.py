@@ -2,7 +2,7 @@
 # AIST – Siril Plugin (AITS-style shell)            #
 # AstroImage Tools Suite / AstroImage Stretch Tool  #
 # Author: Lucas Vuescu - © 2026                     #
-# Contact: astro@mdci.ro or ldvuescu@gmail.com      #
+# Contact: astro@mdci.ro                            #
 #####################################################
 #                                                   #
 #   SPDX-License-Identifier: GPL-3.0-or-later       #
@@ -29,8 +29,8 @@ import cv2
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QLabel, QPushButton,
     QVBoxLayout, QHBoxLayout, QWidget, QSlider, QSpacerItem, QSizePolicy,
-    QGridLayout, QCheckBox,
-    QGraphicsView, QGraphicsScene, QGraphicsPixmapItem, QMessageBox
+    QGridLayout, QCheckBox, QGraphicsView, QGraphicsScene, 
+    QGraphicsPixmapItem, QMessageBox, QRadioButton, QGroupBox,
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer, QSettings
 from PyQt6.QtGui import QImage, QPixmap
@@ -39,19 +39,19 @@ from PyQt6.QtGui import QImage, QPixmap
 #  THEME & STYLING
 # ---------------------
 AITS_STYLE = """
-QWidget { background-color: #1b1b1b; color: #cccccc; font-size: 10pt; }
+QWidget { background-color: #0b0f1a; color: #cccccc; font-size: 10pt; }
 QLabel { color: #cccccc; }
 
 QPushButton {
-    background-color: #2a2a2a;
+    background-color: #0b0f1a;
     border: 1px solid #804040;
     border-radius: 6px;
     padding: 6px;
 }
 QPushButton:hover { background-color: #00994d; }
-QPushButton#ProcessButton { background-color: #2a2a2a; border: 1px solid #804040; }
+QPushButton#ProcessButton { background-color: #0b0f1a; border: 1px solid #804040; }
 QPushButton#ProcessButton:hover { background-color: #00994d; }
-QPushButton#CloseButton { background-color: #2a2a2a; border: 1px solid #804040; }
+QPushButton#CloseButton { background-color: #0b0f1a; border: 1px solid #804040; }
 QPushButton#CloseButton:hover { background-color: #00994d; }
 
 QSlider::groove:horizontal { height: 6px; background: #444; }
@@ -65,14 +65,45 @@ QCheckBox::indicator {
     width: 14px;
     height: 14px;
     border: 1px solid #2ec4c7;
-    background-color: #1b1b1b;
+    background-color: #0b0f1a;
 }
 QCheckBox::indicator:checked {
     background-color: #2ec4c7;
 }
+
+QRadioButton {
+    color: #cccccc;
+    spacing: 8px;
+}
+
+QRadioButton::indicator {
+    width: 16px;
+    height: 16px;
+    border: 2px solid #2ec4c7;
+    border-radius: 8px;
+    background-color: #0b0f1a;
+}
+
+QRadioButton::indicator:checked {
+    background-color: #2ec4c7;
+}
+
+QGroupBox {
+    border: 1px solid #444444;
+    border-radius: 6px;
+    margin-top: 6px;
+    padding-top: 6px;
+}
+
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 3px;
+}
+
 """
 
-VERSION = "2.0"
+VERSION = "4.0 PRO"
 
 # =============================================================================
 #  CORE: NORMALIZARE INPUT
@@ -114,15 +145,17 @@ def aist_auto_stf(img):
     return (img * 255).astype(np.uint8)
 
 def aist_auto_white_balance(img):
-    # img: HWC, RGB, float32 0–1
-    b, g, r = cv2.split(img.astype(np.float32))  # ordinea canalelor nu contează la medii
+    b, g, r = cv2.split(img.astype(np.float32))
+    
     avg = (np.mean(b) + np.mean(g) + np.mean(r)) / 3.0
+
     b *= avg / (np.mean(b) + 1e-6)
     g *= avg / (np.mean(g) + 1e-6)
     r *= avg / (np.mean(r) + 1e-6)
+   
     return cv2.merge([b, g, r])
 
-def aist_stretch(img, black_slider, mid_slider, white_slider,
+def aist_stretch_percentile(img, black_slider, mid_slider, white_slider,
                  autostretch_slider, auto_stretch_checked, highlight_slider):
     img = img.astype(np.float32)
 
@@ -142,18 +175,245 @@ def aist_stretch(img, black_slider, mid_slider, white_slider,
 
     # luminance stretch
     luma = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
-    l = luma / (luma + (1.0 - luma) * gamma)
+    D = 1.45 * gamma
+    l = np.arcsinh(D * luma) / np.arcsinh(D)
     img = img * (l[..., None] / (luma[..., None] + 1e-6))
     img = np.clip(img, 0, 1)
 
-    # highlight protect
-    k = highlight_slider / 100.0
-    if k > 0:
-        img = img / (1.0 + k * img)
+   
+    return np.clip(img, 0, 1)
+
+def aist_stretch_hyperbolic(img, black_slider, mid_slider, white_slider,
+                            autostretch_slider, auto_stretch_checked,
+                            highlight_slider):
+
+    img = img.astype(np.float32)
+
+    if auto_stretch_checked:
+        f = autostretch_slider / 100.0
+        black = np.percentile(img, 0.25)
+        white = np.percentile(img, 99 + f)
+        gamma = max(0.1, mid_slider / 50.0) # Pe auto păstrăm logica lui Lucas
+    else:
+        black = black_slider / 100.0 * np.max(img)
+        white = white_slider / 100.0 * np.max(img)
+        
+        # --- MODIFICARE AICI PENTRU MANUAL: Corecție Gamma Reală ---
+        if mid_slider >= 50:
+            gamma_manual = 1.0 + ((mid_slider - 50) / 50.0) * 2.0  # Urcă până la 3.0
+        else:
+            gamma_manual = 0.1 + (mid_slider / 50.0) * 0.9          # Coboară până la 0.1
+        
+        gamma = 1.0 # Resetăm gamma din arcsinh pe manual pentru a nu dubla efectul
+
+    img = (img - black) / (white - black + 1e-6)
+    img = np.clip(img, 0, 1)
+
+    # --- APLICARE CURBĂ MANUALĂ PE IMAGINE (Doar dacă e debifat Auto) ---
+    if not auto_stretch_checked:
+        img = np.power(img, 1.0 / (gamma_manual + 1e-6))
+
+    luma = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+    D = 1.25 * gamma
+    stretch = np.arcsinh(D * luma) / np.arcsinh(D)
+
+    blend = 0.82
+    l = luma * (1.0 - blend) + stretch * blend
+
+    img = img * (l[..., None] / (luma[..., None] + 1e-6))
 
     return np.clip(img, 0, 1)
 
+    
+def aist_stretch_statistical(img, black_slider, mid_slider, white_slider,
+                             autostretch_slider, auto_stretch_checked,
+                             highlight_slider):
+
+    img = img.astype(np.float32)
+
+    f = autostretch_slider / 100.0
+    target_median = 0.10 + f * 0.20
+
+    if auto_stretch_checked:
+
+        sample = img.reshape(-1)
+
+        median = np.median(sample)
+
+        lower_half = sample[sample <= median]
+
+        if len(lower_half) < 16:
+            mad = np.median(np.abs(sample - median))
+        else:
+            med_lo = np.median(lower_half)
+            mad = np.median(np.abs(lower_half - med_lo))
+
+        noise_sigma = 1.4826 * mad
+
+        sigma_value = 2.0 + (mid_slider / 100.0) * 6.0
+
+        black_point = median - sigma_value * noise_sigma
+
+        black_point = max(float(np.min(img)), float(black_point))
+        black_point = min(black_point, 0.99)
+
+        white_point = 1.0
+
+    else:
+
+        black_point = black_slider / 100.0
+        white_point = white_slider / 100.0
+
+        if white_point <= black_point:
+            white_point = black_point + 0.01
+
+    img = (img - black_point) / (white_point - black_point + 1e-6)
+    img = np.clip(img, 0.0, 1.0)
+
+    luma = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+
+    current_median = float(np.median(luma))
+    
+    # --- REPARAȚIA PERFECTĂ PENTRU MANUAL (FĂRĂ SĂ SCHIMBĂM LOGICA LUI LUCAS) ---
+    if not auto_stretch_checked:
+        # Folosim mid_slider pentru a muta subtil valoarea mediană curentă a imaginii 
+        # înainte de ecuația rațională, oferind acel control pe medii care lipsea!
+        # La 50 (mijloc), factorul este 1.0 (imaginea rămâne exact cum a vrut el)
+        factor_middle = 0.2 + (mid_slider / 50.0) * 0.8
+        current_median = current_median * factor_middle
+
+    if current_median < 1e-6:
+        return img.astype(np.float32)
+
+    num = (current_median - 1.0) * target_median * luma
+
+    den = (
+        current_median *
+        (target_median + luma - 1.0)
+        - target_median * luma
+    )
+
+    den = np.where(np.abs(den) < 1e-6, 1e-6, den)
+
+    stretched_luma = np.clip(num / den, 0.0, 1.0)
+
+    img = img * (
+        stretched_luma[..., None]
+        / (luma[..., None] + 1e-6)
+    )
+
+    return np.clip(img, 0.0, 1.0).astype(np.float32)
+    
+def aist_stretch_hybrid(img,
+                        black_slider,
+                        mid_slider,
+                        white_slider,
+                        autostretch_slider,
+                        auto_stretch_checked,
+                        highlight_slider):
+
+    hyper = aist_stretch_hyperbolic(
+        img.copy(),
+        black_slider,
+        mid_slider,
+        white_slider,
+        autostretch_slider,
+        auto_stretch_checked,
+        highlight_slider
+    ).astype(np.float32)
+
+    stat = aist_stretch_statistical(
+        img.copy(),
+        black_slider,
+        mid_slider,
+        white_slider,
+        autostretch_slider,
+        auto_stretch_checked,
+        highlight_slider
+    ).astype(np.float32)
+
+    # Luminanta celor doua stretch-uri
+    hyper_luma = np.mean(hyper, axis=2).astype(np.float32)
+    stat_luma = np.mean(stat, axis=2).astype(np.float32)
+
+    # Blend luminanta
+    new_luma = np.sqrt(
+        np.clip(
+            hyper_luma * stat_luma,
+            0.0,
+            1.0
+        )
+    ).astype(np.float32)
+
+    # Pastram culoarea Statistical
+    ratio = new_luma / (stat_luma + 1e-6)
+
+    img = stat * ratio[..., None]
+
+    return np.clip(img, 0.0, 1.0).astype(np.float32)
+
+def aist_apply_star_core_recovery(img, highlight_slider):
+
+    k = np.clip(
+        highlight_slider / 100.0,
+        0.0,
+        1.0
+    )
+
+    if k <= 0:
+        return img
+
+    eps = 1e-6
+
+    luma = cv2.cvtColor(
+        np.clip(img, 0, 1).astype(np.float32),
+        cv2.COLOR_RGB2GRAY
+    )
+
+    luma = np.clip(luma, 0.0, 1.0)
+
+    mask = np.clip(
+        (luma - 0.55) / 0.45,
+        0,
+        1
+    )
+
+    mask = mask ** (1.8 - 1.2 * k)
+
+    r_ratio = img[..., 0] / np.maximum(luma, eps)
+    g_ratio = img[..., 1] / np.maximum(luma, eps)
+    b_ratio = img[..., 2] / np.maximum(luma, eps)
+
+    r = luma * (r_ratio * (1.0 - mask) + mask)
+    g = luma * (g_ratio * (1.0 - mask) + mask)
+    b = luma * (b_ratio * (1.0 - mask) + mask)
+
+    recovered = np.stack([r, g, b], axis=-1)
+
+    recovery_blend = 0.35 * k
+
+    img = (
+        img * (1.0 - recovery_blend)
+        + recovered * recovery_blend
+    )
+
+    compression = 1.0 - (0.03 * k)
+
+    img = np.power(img, compression)
+
+    img = np.nan_to_num(
+        img,
+        nan=0.0,
+        posinf=1.0,
+        neginf=0.0
+    )
+
+    return np.clip(img, 0, 1).astype(np.float32)
+
+
 def aist_apply_background(img, bg_slider):
+    img = img.astype(np.float32)
     val = bg_slider
     if val == 0:
         return img
@@ -163,6 +423,7 @@ def aist_apply_background(img, bg_slider):
     return np.clip(img, 0, 1)
 
 def aist_apply_enhance(img, enhance_slider):
+    img = img.astype(np.float32)
     val = enhance_slider
     if val == 0:
         return img
@@ -187,7 +448,11 @@ def aist_process_pipeline(img_rgb,
                           enhance_slider,
                           bg_slider,
                           highlight_slider,
-                          autostretch_slider):
+                          autostretch_slider,
+                          engine_percentile,
+                          engine_hyper,
+                          engine_stat,
+                          engine_hybrid):
     """
     img_rgb: HWC, RGB, float32 0–1
     return: HWC, RGB, float32 0–1
@@ -197,20 +462,61 @@ def aist_process_pipeline(img_rgb,
     if auto_wb_checked:
         img = aist_auto_white_balance(img)
 
-    img = aist_stretch(
-        img,
-        black_slider=black_slider,
-        mid_slider=mid_slider,
-        white_slider=white_slider,
-        autostretch_slider=autostretch_slider,
-        auto_stretch_checked=auto_stretch_checked,
-        highlight_slider=highlight_slider
-    )
+    if engine_percentile:
 
-    img = aist_apply_background(img, bg_slider)
-    img = aist_apply_enhance(img, enhance_slider)
+        img = aist_stretch_percentile(
+            img,
+            black_slider=black_slider,
+            mid_slider=mid_slider,
+            white_slider=white_slider,
+            autostretch_slider=autostretch_slider,
+            auto_stretch_checked=auto_stretch_checked,
+            highlight_slider=highlight_slider
+        )
 
-    return np.clip(img, 0, 1)
+    elif engine_hyper:
+
+        img = aist_stretch_hyperbolic(
+            img,
+            black_slider=black_slider,
+            mid_slider=mid_slider,
+            white_slider=white_slider,
+            autostretch_slider=autostretch_slider,
+            auto_stretch_checked=auto_stretch_checked,
+            highlight_slider=highlight_slider
+        )
+
+    elif engine_stat:
+
+        img = aist_stretch_statistical(
+            img,
+            black_slider=black_slider,
+            mid_slider=mid_slider,
+            white_slider=white_slider,
+            autostretch_slider=autostretch_slider,
+            auto_stretch_checked=auto_stretch_checked,
+            highlight_slider=highlight_slider
+        )
+
+    elif engine_hybrid:
+
+        img = aist_stretch_hybrid(
+            img,
+            black_slider=black_slider,
+            mid_slider=mid_slider,
+            white_slider=white_slider,
+            autostretch_slider=autostretch_slider,
+            auto_stretch_checked=auto_stretch_checked,
+            highlight_slider=highlight_slider
+        )
+                
+    img = np.clip(img, 0, 1).astype(np.float32)
+
+    img = aist_apply_star_core_recovery(img,highlight_slider)
+    img = aist_apply_background(img,bg_slider)
+    img = aist_apply_enhance(img,enhance_slider)
+
+    return np.clip(img, 0, 1).astype(np.float32)
 
 # =============================================================================
 #  GUI HELPERS
@@ -287,7 +593,11 @@ class AISTWorker(QThread):
             enhance_slider=self.p['enhance'],
             bg_slider=self.p['bg'],
             highlight_slider=self.p['highlight'],
-            autostretch_slider=self.p['autostretch']
+            autostretch_slider=self.p['autostretch'],
+            engine_percentile=self.p['engine_percentile'],
+            engine_hyper=self.p['engine_hyper'],
+            engine_stat=self.p['engine_stat'],
+            engine_hybrid=self.p['engine_hybrid'],
         )
 
         proc = np.nan_to_num(proc, nan=0.0, posinf=1.0, neginf=0.0)
@@ -306,7 +616,7 @@ class AISTSirilGUI(QMainWindow):
         super().__init__()
         self.siril = siril
         self.app = app
-        self.setWindowTitle(f"AIST – Siril Plugin v. {VERSION}")
+        self.setWindowTitle(f"AIST – Siril Plugin v. {VERSION} by Lucas V.")
         self.setStyleSheet(AITS_STYLE)
         self.resize(1400, 720)
         self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint)
@@ -319,7 +629,7 @@ class AISTSirilGUI(QMainWindow):
 
         self.debounce = QTimer()
         self.debounce.setSingleShot(True)
-        self.debounce.setInterval(250)
+        self.debounce.setInterval(150)
         self.debounce.timeout.connect(self.run_worker)
 
         header_msg = (
@@ -327,7 +637,7 @@ class AISTSirilGUI(QMainWindow):
             "# AIST – Siril Plugin (AITS-style shell)            #\n"
             "# AstroImage Tools Suite / AstroImage Stretch Tool  #\n"
             "# Author: Lucas Vuescu - © 2026                     #\n"
-            "# Contact: astro@mdci.ro or ldvuescu@gmail.com      #\n"
+            "# Contact: astro@mdci.ro                            #\n"
             "#####################################################"
         )
         try:
@@ -352,13 +662,13 @@ class AISTSirilGUI(QMainWindow):
         left = QVBoxLayout(left_container)
         left.setSpacing(6)
 
-        lbl_title = QLabel("AstroImage Stretch Tool (AIST)")
+        lbl_title = QLabel("AstroImage Stretch Tool PRO")
         lbl_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         lbl_title.setStyleSheet("color: #2ec4c7; font-size: 16px; font-weight: bold;")
         left.addWidget(lbl_title)
 
         # === BRAND ===
-        brand = QLabel("● Release 25.04.2026 - © Lucas V. ●")
+        brand = QLabel("● Release 08.06.2026 - © Lucas V. ●")
         brand.setStyleSheet("color: #2ec4c7; font-size: 10pt; font-weight: italic;")
         brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
@@ -376,9 +686,9 @@ class AISTSirilGUI(QMainWindow):
         self.black_value = QLabel("0")
 
         # Mid
-        self.mid_slider = ResetSlider(Qt.Orientation.Horizontal, 32)
+        self.mid_slider = ResetSlider(Qt.Orientation.Horizontal, 50)
         self.mid_slider.setRange(1, 100)
-        self.mid_slider.setValue(32)
+        self.mid_slider.setValue(50)
         self.mid_value = QLabel("1.00")
 
         # White
@@ -391,22 +701,25 @@ class AISTSirilGUI(QMainWindow):
         self.enhance_slider = ResetSlider(Qt.Orientation.Horizontal, 50)
         self.enhance_slider.setRange(0, 100)
         self.enhance_slider.setValue(50)
+        self.enhance_value = QLabel("50")
 
         # Background
         self.bg_slider = ResetSlider(Qt.Orientation.Horizontal, 35)
         self.bg_slider.setRange(0, 100)
         self.bg_slider.setValue(35)
+        self.bg_value = QLabel("35")
 
         # Highlight Protect
-        self.highlight_slider = ResetSlider(Qt.Orientation.Horizontal, 5)
-        self.highlight_slider.setRange(0, 200)
-        self.highlight_slider.setValue(5)
+        self.highlight_slider = ResetSlider(Qt.Orientation.Horizontal, 30)
+        self.highlight_slider.setRange(10, 100)
+        self.highlight_slider.setValue(30)
+        self.highlight_value = QLabel("0.30")
 
         # Stretch Factor
-        self.autostretch_slider = ResetSlider(Qt.Orientation.Horizontal, 65)
+        self.autostretch_slider = ResetSlider(Qt.Orientation.Horizontal, 75)
         self.autostretch_slider.setRange(1, 99)
-        self.autostretch_slider.setValue(65)
-        self.autostretch_value = QLabel("0.65")
+        self.autostretch_slider.setValue(75)
+        self.autostretch_value = QLabel("0.75")
               
         sliders.addItem(QSpacerItem(0, 15), 0, 0)
         sliders.addItem(QSpacerItem(0, 15), 1, 0)
@@ -417,7 +730,7 @@ class AISTSirilGUI(QMainWindow):
         sliders.addWidget(self.black_slider, 4, 1)
         sliders.addWidget(self.black_value, 4, 2)
 
-        sliders.addWidget(QLabel("Mid"), 5, 0)
+        sliders.addWidget(QLabel("Middle"), 5, 0)
         sliders.addWidget(self.mid_slider, 5, 1)
         sliders.addWidget(self.mid_value, 5, 2)
 
@@ -429,12 +742,15 @@ class AISTSirilGUI(QMainWindow):
 
         sliders.addWidget(QLabel("Enhance"), 8, 0)
         sliders.addWidget(self.enhance_slider, 8, 1)
+        sliders.addWidget(self.enhance_value, 8, 2)
 
         sliders.addWidget(QLabel("Background"), 9, 0)
         sliders.addWidget(self.bg_slider, 9, 1)
+        sliders.addWidget(self.bg_value, 9, 2)
 
         sliders.addWidget(QLabel("Highlight Protect"), 10, 0)
         sliders.addWidget(self.highlight_slider, 10, 1)
+        sliders.addWidget(self.highlight_value, 10, 2)
         
         sliders.addItem(QSpacerItem(0, 15), 11, 0)
 
@@ -457,6 +773,38 @@ class AISTSirilGUI(QMainWindow):
         cb_layout.addWidget(self.auto_wb)
         cb_layout.addWidget(self.auto_stretch)
         cb_layout.addWidget(self.stf_cb)
+        
+        # ===== STRETCH ENGINE =====
+
+        self.engine_percentile = QRadioButton("Percentile Stretch")
+        self.engine_hyper = QRadioButton("Hyperbolic Stretch")
+        self.engine_stat = QRadioButton("Statistical Stretch")
+        self.engine_hybrid = QRadioButton("Hybrid Stretch")
+
+        self.engine_percentile.setChecked(True)
+
+        self.engine_percentile.toggled.connect(self.trigger_update)
+        self.engine_hyper.toggled.connect(self.trigger_update)
+        self.engine_stat.toggled.connect(self.trigger_update)
+        self.engine_hybrid.toggled.connect(self.trigger_update)
+                
+        self.engine_percentile.toggled.connect(self.update_values)
+        self.engine_hyper.toggled.connect(self.update_values)
+        self.engine_stat.toggled.connect(self.update_values)
+        self.engine_hybrid.toggled.connect(self.update_values)        
+
+        engine_box = QGroupBox("Stretch Engine")
+
+        engine_layout = QVBoxLayout()
+
+        engine_layout.addWidget(self.engine_percentile)
+        engine_layout.addWidget(self.engine_hyper)
+        engine_layout.addWidget(self.engine_stat)
+        engine_layout.addWidget(self.engine_hybrid)
+
+        engine_box.setLayout(engine_layout)
+
+        left.addWidget(engine_box)
         
         left.addStretch()
         left.addLayout(cb_layout)
@@ -502,9 +850,9 @@ class AISTSirilGUI(QMainWindow):
         
         self.btn_coffee = QPushButton("☕")
         self.btn_coffee.setObjectName("CoffeeButton")
-        self.btn_coffee.setToolTip("I hope Like it!")
+        self.btn_coffee.setToolTip("Support Development")
         self.btn_coffee.setCursor(Qt.CursorShape.PointingHandCursor)
-        self.btn_coffee.clicked.connect(lambda: webbrowser.open("https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=ldvuescu@gmail.com&currency_code=EUR&amount=3"))
+        self.btn_coffee.clicked.connect(lambda: webbrowser.open("https://www.paypal.com/cgi-bin/webscr?cmd=_donations&business=ldvuescu@gmail.com&currency_code=EUR&amount=5"))
 
 
         self.chk_ontop = QCheckBox("On Top")
@@ -566,7 +914,7 @@ class AISTSirilGUI(QMainWindow):
             self.img_full = img
 
             h, w = img.shape[1], img.shape[2]
-            scale = 2048 / max(h, w)
+            scale = 1024 / max(h, w)
 
             if scale < 1.0:
                 new_w = int(w * scale)
@@ -592,21 +940,33 @@ class AISTSirilGUI(QMainWindow):
             print(f"Input Error: {e}")
 
     def update_values(self):
-        gamma = max(0.1, self.mid_slider.value() / 50.0)
         self.black_value.setText(str(self.black_slider.value()))
-        self.mid_value.setText(f"{gamma:.2f}")
+
+        if self.engine_stat.isChecked():
+            sigma = 2.0 + (self.mid_slider.value() / 100.0) * 6.0
+            self.mid_value.setText(f"{sigma:.1f}")
+        else:
+            gamma = max(0.1, self.mid_slider.value() / 50.0)
+            self.mid_value.setText(f"{gamma:.2f}")
+
         self.white_value.setText(str(self.white_slider.value()))
+        self.enhance_value.setText(str(self.enhance_slider.value()))
+        self.bg_value.setText(str(self.bg_slider.value()))
+
+        k = self.highlight_slider.value() / 100.0
+        self.highlight_value.setText(f"{k:.2f}")
+
         f = self.autostretch_slider.value() / 100.0
         self.autostretch_value.setText(f"{f:.2f}")
 
     def set_defaults(self):
         self.black_slider.setValue(0)
-        self.mid_slider.setValue(32)
+        self.mid_slider.setValue(50)
         self.white_slider.setValue(100)
         self.enhance_slider.setValue(50)
         self.bg_slider.setValue(35)
-        self.highlight_slider.setValue(5)
-        self.autostretch_slider.setValue(65)
+        self.highlight_slider.setValue(30)
+        self.autostretch_slider.setValue(75)
         self.auto_wb.setChecked(True)
         self.auto_stretch.setChecked(True)
         self.stf_cb.setChecked(False)
@@ -630,7 +990,11 @@ class AISTSirilGUI(QMainWindow):
             'enhance': self.enhance_slider.value(),
             'bg': self.bg_slider.value(),
             'highlight': self.highlight_slider.value(),
-            'autostretch': self.autostretch_slider.value()
+            'autostretch': self.autostretch_slider.value(),
+            'engine_percentile': self.engine_percentile.isChecked(),
+            'engine_hyper': self.engine_hyper.isChecked(),
+            'engine_stat': self.engine_stat.isChecked(),
+            'engine_hybrid': self.engine_hybrid.isChecked()
         }
 
         # 🔥 cache params (evită recalculări inutile)
@@ -684,7 +1048,12 @@ class AISTSirilGUI(QMainWindow):
                 enhance_slider=self.enhance_slider.value(),
                 bg_slider=self.bg_slider.value(),
                 highlight_slider=self.highlight_slider.value(),
-                autostretch_slider=self.autostretch_slider.value()
+                autostretch_slider=self.autostretch_slider.value(),
+
+                engine_percentile=self.engine_percentile.isChecked(),
+                engine_hyper=self.engine_hyper.isChecked(),
+                engine_stat=self.engine_stat.isChecked(),
+                engine_hybrid=self.engine_hybrid.isChecked()
             )
 
             proc = np.nan_to_num(proc, nan=0.0, posinf=1.0, neginf=0.0)         
